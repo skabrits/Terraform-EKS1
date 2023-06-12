@@ -1,0 +1,40 @@
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: grafana
+  namespace: argocd
+  finalizers:
+    - resources-finalizer.argocd.argoproj.io
+spec:
+  syncPolicy:
+    syncOptions:
+      - CreateNamespace=true
+    automated:
+      prune: true
+      selfHeal: true
+      allowEmpty: true
+  project: default
+  source:
+    chart: grafana
+    repoURL: https://grafana.github.io/helm-charts
+    targetRevision: "*"
+    helm:
+      releaseName: grafana
+      parameters:
+      - name: "service.type"
+        value: "ClusterIP"
+      - name: "sidecar.dashboards.enabled"
+        value: "true"
+      - name: "sidecar.datasources.enabled"
+        value: "true"
+      - name: "persistence.storageClassName"
+        value: "ebs-sc"
+      - name: "persistence.enabled"
+        value: "true"
+      - name: "grafana\\.ini.server.root_url"
+        value: "%(protocol)s://%(domain)s:%(http_port)s/grafana/"
+      - name: "grafana\\.ini.server.serve_from_sub_path"
+        value: "true"
+  destination:
+    server: "https://kubernetes.default.svc"
+    namespace: perform-system

@@ -1,0 +1,30 @@
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: django-app
+  namespace: argocd
+  finalizers:
+    - resources-finalizer.argocd.argoproj.io
+spec:
+  syncPolicy:
+    syncOptions:
+      - CreateNamespace=true
+    automated:
+      prune: true
+      selfHeal: true
+      allowEmpty: true
+  project: default
+  source:
+    path: django-app/
+    repoURL: https://github.com/skabrits/ML_WEBS_OPS.git
+    targetRevision: master
+    helm:
+      releaseName: django-app
+      valueFiles:
+      - cluster_values.yaml
+      parameters:
+      - name: "image.repository"
+        value: <uri>
+  destination:
+    server: "https://kubernetes.default.svc"
+    namespace: django-namespace

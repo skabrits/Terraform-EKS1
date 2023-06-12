@@ -1,0 +1,18 @@
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: example-grafana-datasource
+  namespace: perform-system
+  labels:
+     grafana_datasource: "1"
+data:
+ gra_datasources.yaml: |-
+   apiVersion: 1
+   datasources:
+    - name: Prometheus
+      type: prometheus
+      orgId: 1
+      url: http://prometheus-server.perform-system.svc.cluster.local
+      access: proxy
+      isDefault: true

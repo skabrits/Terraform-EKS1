@@ -1,0 +1,83 @@
+#!/bin/bash
+
+SCRIPT1=$(readlink -f "$0")
+SCRIPTPATH1=$(dirname "$SCRIPT1")
+
+cp "$SCRIPTPATH1/../move_local.tf" "$SCRIPTPATH1/../terraform-state/state.tf"
+
+cd "$SCRIPTPATH1/../terraform-state"
+
+terraform init -migrate-state -force-copy
+terraform validate
+terraform apply -auto-approve
+
+cp "$SCRIPTPATH1/../move_remote.tf" "$SCRIPTPATH1/../terraform-state/state.tf"
+
+terraform init -migrate-state -force-copy
+terraform validate
+terraform apply -auto-approve
+
+cd "$SCRIPTPATH1/../terraform-helm"
+
+terraform init -migrate-state -force-copy
+terraform validate
+terraform apply -auto-approve
+
+cd "$SCRIPTPATH1"
+
+helm repo add origin_charts s3://skabrits-bucket/helm/charts
+
+#mkdir -p tmp
+#cd tmp
+#git clone "https://github.com/skabrits/ML_web.git" .
+
+#printf "Starting Docker";
+
+#unset tmp
+#unset temp
+
+#open -a Docker 2> /dev/null &
+
+#"/c/Program Files/Docker/Docker/Docker Desktop.exe" 2> /dev/null &
+
+#systemctl start docker 2> /dev/null &
+
+#while [[ -z "$(! docker stats --no-stream 2> /dev/null)" ]];
+#do
+#	printf "."
+#	sleep 1
+#done
+
+#echo ""
+#echo "Started!"
+
+#cd django-image
+
+#log_pas=$(aws ecr get-login-password --region $TF_VAR_main_region)
+
+#uri="$(aws sts get-caller-identity --query Account --output text).dkr.ecr.${TF_VAR_main_region}.amazonaws.com/test-app"
+
+#echo "$log_pas" | docker login --username AWS --password-stdin $uri
+
+#cp -r ../.git ./.git
+
+#docker build -t ${uri}:dev --build-arg credentials=$GH_CREDS .
+#docker push ${uri}:dev
+
+#cd ..
+export HELM_S3_MODE=3
+helm repo update
+
+#taskkill //F //IM "Docker Desktop.exe" //T 2> /dev/null
+
+#echo "$(sed "s~skabrits/django~$uri~g" django-app/values.yaml)" > django-app/values.yaml
+
+#echo "$(sed "s~regcred1~regcred2~g" django-app/values.yaml)" > django-app/values.yaml
+
+#helm package django-app
+#echo "$(ls | grep django-app- | tail -1)"
+#helm s3 push --force "$(ls | grep django-app- | tail -1)" origin_charts
+
+#cd ..
+#rm -rf tmp
+cd "$SCRIPTPATH1"

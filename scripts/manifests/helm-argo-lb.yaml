@@ -1,0 +1,65 @@
+---
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: aws-load-balancer-kustomize
+  namespace: argocd
+  finalizers:
+    - resources-finalizer.argocd.argoproj.io
+spec:
+  syncPolicy:
+    syncOptions:
+      - CreateNamespace=true
+    automated:
+      prune: true
+      selfHeal: true
+      allowEmpty: true
+  project: default
+  source:
+    path: stable/aws-load-balancer-controller/crds/
+    repoURL: https://github.com/aws/eks-charts/
+    targetRevision: master
+  destination:
+    server: "https://kubernetes.default.svc"
+    namespace: kube-system
+---
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: aws-load-balancer
+  namespace: argocd
+  finalizers:
+    - resources-finalizer.argocd.argoproj.io
+spec:
+  syncPolicy:
+    syncOptions:
+      - CreateNamespace=true
+    automated:
+      prune: true
+      selfHeal: true
+      allowEmpty: true
+  project: default
+  source:
+    chart: aws-load-balancer-controller
+    repoURL: https://aws.github.io/eks-charts
+    targetRevision: "*"
+    helm:
+      releaseName: aws-load-balancer-controller
+      parameters:
+      - name: "clusterName"
+        value: "django-cluster"
+      - name: "serviceAccount.create"
+        value: "false"
+      - name: "serviceAccount.name"
+        value: "aws-load-balancer-controller"
+      - name: "nodeSelector.instance_type"
+        value: "micro"
+      - name: "tolerations[0].effect"
+        value: "NoSchedule"
+      - name: "tolerations[0].key"
+        value: "nginx"
+      - name: "tolerations[0].operator"
+        value: "Exists"
+  destination:
+    server: "https://kubernetes.default.svc"
+    namespace: kube-system

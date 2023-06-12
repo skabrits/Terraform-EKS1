@@ -1,0 +1,16 @@
+apiVersion: kubeflow.org/v1beta1
+kind: Profile
+metadata:
+  name: fake-com  
+spec:
+  owner:
+    kind: User
+    name: fake@gmail.com   
+
+  resourceQuotaSpec:
+   hard:
+     cpu: "1"
+     memory: 2Gi
+     requests.nvidia.com/gpu: "1"
+     persistentvolumeclaims: "1"
+     requests.storage: "7Gi"

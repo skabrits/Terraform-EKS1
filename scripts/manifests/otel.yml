@@ -1,0 +1,49 @@
+---
+apiVersion: opentelemetry.io/v1alpha1
+kind: OpenTelemetryCollector
+metadata:
+  name: otel-collector-daemonset
+  namespace: log-system
+#  namespace: opentelemetry-operator-system 
+spec:
+  mode: daemonset
+  config: |
+    receivers:
+      # fluentforward:
+        # endpoint: 0.0.0.0:8006
+    
+      otlp:
+        protocols:
+          http:
+          grpc:
+    
+    processors:
+      batch:
+    
+    extensions:
+      health_check: {}
+    exporters:
+      jaeger:
+        endpoint: jaeger-el-collector:14250
+        tls:
+          insecure: true
+      logging:
+      # elasticsearch/log:
+        # endpoints: [https://quickstart-es-http:9200]
+        # tls:
+          #insecure: true
+          # insecure_skip_verify: true
+        # user: elastic
+        # password: <PWD_TMP>
+        # logs_index: my_log_index
+    service:
+      extensions: [health_check]
+      pipelines:
+        traces:
+          receivers: [otlp]
+          processors: [batch]
+          exporters: [jaeger]
+        # logs:
+         # receivers: [fluentforward]
+         # processors: [batch]
+         # exporters: [elasticsearch/log]

@@ -1,0 +1,43 @@
+#!/bin/bash
+
+SCRIPT=$(readlink -f "$0")
+SCRIPTPATH=$(dirname "$SCRIPT")
+
+if [ -z $1 ]
+then
+    echo "Enter password" 1>&2
+    exit 1;
+else
+	if [ -f "$SCRIPTPATH/authData.yaml" ]
+	then
+		while read -r line ; do
+			name=`echo $line | awk -F "=" '{print $1}'`
+			val=`echo $line | awk -F "=" '{print $2}'`
+			export "$name"="$val"
+		done < "$SCRIPTPATH/authData.yaml"
+	else
+		source "$SCRIPTPATH/setup" -p "$1"
+	fi
+	
+	kubectl delete ing --all -A
+	
+	kubectl delete application -A --all
+	
+	kubectl delete elasticsearch quickstart -n log-system
+	
+	helm ls -a --all-namespaces | sed "/csi/d" | awk 'NR > 1 { print  "-n "$2, $1}' | xargs -L1 helm uninstall
+	
+	kubectl delete -f "$SCRIPTPATH/manifests/"
+	
+	cd "$SCRIPTPATH"
+	
+	kustomize build "../kubeflow-manifests/deployments/vanilla/" | sed "s+admission-webhook-service+service+g" | kubectl delete -f -
+	
+	helm uninstall aws-ebs-csi-driver -n kube-system
+	
+	
+	export TF_VAR_registry_password_ecr="fake"
+	source "$SCRIPTPATH/stop"
+	cd "$SCRIPTPATH"
+    source "$SCRIPTPATH/setup" -u "$1"
+fi

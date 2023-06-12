@@ -1,0 +1,78 @@
+#!/bin/bash
+
+SCRIPT=$(readlink -f "$0")
+SCRIPTPATH=$(dirname "$SCRIPT")
+
+if [ $1 == "-p" ];
+then
+    if [ -z "$2" ];
+    then
+        echo "Enter password"
+    else
+        if [ -f "$SCRIPTPATH/authData.yaml.zip" ]
+        then
+            source "$SCRIPTPATH/unicrypt" -d "$2" -f "$SCRIPTPATH/authData.yaml.zip"
+        elif [ -f "$SCRIPTPATH/authData.yaml" ]
+        then
+            :
+        else
+            echo "Error: no file" 1>&2
+            exit 1;
+        fi
+        
+        mkdir -p "$HOME/.aws/"
+        
+        cp "$HOME/.aws/credentials" "$HOME/.aws/credentials.backup" 2>/dev/null
+
+		cat <<-EOF > "$HOME/.aws/credentials"
+		[default]
+		EOF
+        
+        while read -r line ; do
+            name=`echo $line | awk -F "=" '{print $1}'`
+            val=`echo $line | awk -F "=" '{print $2}'`
+            export "$name"="$val"
+            
+            if [ "$name" == "AWS_ACCESS_KEY_ID" ]
+            then
+				cat <<-EOF >> "$HOME/.aws/credentials"
+				aws_access_key_id=$(echo $val | tr -d '"')
+				EOF
+            elif [ "$name" == "AWS_SECRET_ACCESS_KEY" ]
+            then
+				cat <<-EOF >> "$HOME/.aws/credentials"
+				aws_secret_access_key=$(echo $val | tr -d '"')
+				EOF
+            else
+				:
+            fi
+            
+        done < "$SCRIPTPATH/authData.yaml"
+    fi
+    
+elif [ $1 == "-u" ];
+then
+    source "$SCRIPTPATH/unicrypt" -e "$2" -f "$SCRIPTPATH/authData.yaml"
+   
+    while read -r line ; do
+        name=`echo $line | awk -F "=" '{print $1}'`
+        export "$name"=""
+    done < "$SCRIPTPATH/authData.yaml"
+   
+    rm -f "$SCRIPTPATH/authData.yaml"
+    rm -f "$HOME/.aws/credentials"
+	cp "$HOME/.aws/credentials.backup" "$HOME/.aws/credentials" 2>/dev/null
+	rm -f "$HOME/.aws/credentials.backup"
+	
+    
+elif [ $1 == "--help" ];
+then
+    echo "Script for setting sensitive keys up"
+    echo "Pass pasword for secure file for -p: prepare option ./setup -p [password]"
+    echo "Pass pasword for secure file for -u: unprepare option ./setup -u [password]"
+    
+else
+    echo "Use ./setup --help to list options."
+    echo "Error: wrong option" 1>&2
+    exit 1;
+fi

@@ -1,0 +1,256 @@
+#!/bin/bash
+
+SCRIPT=$(readlink -f "$0")
+SCRIPTPATH=$(dirname "$SCRIPT")
+
+if [ -z $1 ]
+then
+    echo "Enter password" >&2
+    exit 1;
+else
+    source "$SCRIPTPATH/setup" -p "$1"
+	source "$SCRIPTPATH/start_prereq"
+    source "$SCRIPTPATH/start"
+	
+	cd "$SCRIPTPATH"
+	
+	# ArgoCD
+	
+	# https://github.com/argoproj/argocd-example-apps/tree/master/helm-dependency -- usefull link
+	
+	kubectl create namespace argocd
+	kubectl apply -n argocd -f "$SCRIPTPATH/manifests/argocd.yaml"
+	kubectl patch svc argocd-server -n argocd -p '{"spec": {"type": "ClusterIP"}}'
+	
+	kubectl apply -f "$SCRIPTPATH/manifests/argo-cm.yaml"
+	kubectl -n argocd rollout restart deploy argocd-repo-server
+	
+	sed "s+<pwd>+$(echo "${GH_CREDS}" | awk -F ":" '{print $3}' |  awk -F "@" '{print $1}')+g" "$SCRIPTPATH/manifests/gh-secret.yaml" | kubectl apply -f -
+	
+	# deploy ingress
+	
+	kubectl apply -f "$SCRIPTPATH/manifests/helm-argo-lb.yaml"
+	
+	kubectl apply -f "$SCRIPTPATH/manifests/ingress-controller.yaml"
+	
+	# deploy ebs csi driver
+	
+	helm repo add aws-ebs-csi-driver https://kubernetes-sigs.github.io/aws-ebs-csi-driver
+	helm repo update
+	
+	helm upgrade --install aws-ebs-csi-driver --namespace kube-system aws-ebs-csi-driver/aws-ebs-csi-driver -f "$SCRIPTPATH/manifests/ebs_csi.values"
+	
+	# NVIDIA
+	
+	# kubectl apply -f "$SCRIPTPATH/manifests/nvidia.yaml"
+	
+	# django-app
+	
+	uri="$(aws sts get-caller-identity --query Account --output text).dkr.ecr.${TF_VAR_main_region}.amazonaws.com/django-app"
+      
+	sed "s+<uri>+${uri}+g" "$SCRIPTPATH/manifests/helm-argo-django.yaml" | kubectl apply -f -
+	
+	# deploy elasticsearch
+	
+	kubectl create -f https://download.elastic.co/downloads/eck/2.5.0/crds.yaml
+	kubectl apply -f https://download.elastic.co/downloads/eck/2.5.0/operator.yaml
+	
+	kubectl create namespace "log-system"
+	
+	kubectl apply -f "$SCRIPTPATH/manifests/elasticsearch.yml" -n "log-system"
+	kubectl apply -f "$SCRIPTPATH/manifests/kibana.yml" -n "log-system"
+
+	PASSWORD=$(kubectl get secret quickstart-es-elastic-user -n log-system -o=jsonpath='{.data.elastic}' | base64 --decode)
+	iter=0
+	while [ $iter -lt 50 ] && [ -z "$PASSWORD" ]
+	do
+		PASSWORD=$(kubectl get secret quickstart-es-elastic-user -n log-system -o=jsonpath='{.data.elastic}' | base64 --decode)
+		iter=$((iter+1))
+		sleep 5
+	done
+	
+	kubectl create secret generic jaeger-secret --from-literal=ES_PASSWORD=${PASSWORD} --from-literal=ES_USERNAME=elastic -n log-system
+	
+	#deploy jaeger
+	
+	kubectl apply -f https://github.com/cert-manager/cert-manager/releases/download/v1.6.3/cert-manager.yaml
+	
+	kubectl create namespace observability
+	
+	kubectl create -f https://github.com/jaegertracing/jaeger-operator/releases/download/v1.39.0/jaeger-operator.yaml -n observability
+	
+	sleep 30
+	
+	kubectl apply -f "$SCRIPTPATH/manifests/jaeger.yml" -n "log-system"
+	
+	# deploy opentelemetry
+	
+	helm repo add open-telemetry https://open-telemetry.github.io/opentelemetry-helm-charts
+	helm repo update
+	
+	helm upgrade --install --namespace opentelemetry-operator-system --create-namespace my-opentelemetry-operator open-telemetry/opentelemetry-operator
+	
+	sleep 30
+	
+	kubectl apply -f "$SCRIPTPATH/manifests/otel.yml" -n "log-system"
+
+	# deploy fluent-bit
+	
+	echo "$(sed "s/<PWD_TMP>/$PASSWORD/g" "$SCRIPTPATH/manifests/fluent.values")" > "$SCRIPTPATH/manifests/fluent_tmp.values"
+
+	helm repo add fluent https://fluent.github.io/helm-charts
+	helm repo update
+
+	helm upgrade --install --namespace log-system --create-namespace fluent-bit fluent/fluent-bit -f "$SCRIPTPATH/manifests/fluent_tmp.values"
+	rm -f "$SCRIPTPATH/manifests/fluent_tmp.values"
+
+	# deploy p & g
+
+	kubectl apply -f "$SCRIPTPATH/manifests/helm-argo-prom.yaml"
+	kubectl apply -f "$SCRIPTPATH/manifests/helm-argo-graf.yaml"
+
+	# finish
+	
+	kubectl delete -A validatingWebhookConfiguration aws-load-balancer-webhook
+	
+	sleep 30
+
+	kubectl apply -f "$SCRIPTPATH/manifests/ingress.yaml"
+	
+	sleep 30
+
+	export django_endpoint="$(kubectl get ing ingress-dj-http -n django-namespace --template "{{ range (index .status.loadBalancer.ingress 0) }}{{.}}{{ end }}")/django"	
+	export kibana_endpoint="$(kubectl get ing ingress-kib-https -n log-system --template "{{ range (index .status.loadBalancer.ingress 0) }}{{.}}{{ end }}")/logs"
+	export graphana_endpoint="$(kubectl get ing ingress-gra-http -n perform-system --template "{{ range (index .status.loadBalancer.ingress 0) }}{{.}}{{ end }}")/grafana"
+	export argocd_endpoint="$(kubectl get ing ingress-argo-https -n argocd --template "{{ range (index .status.loadBalancer.ingress 0) }}{{.}}{{ end }}")/cd"
+
+	version_data=$(curl --connect-timeout 60 --max-time 120 -s "http://${django_endpoint}/version")
+	kibana_data=$(curl --connect-timeout 60 --max-time 120 -s -k https://$kibana_endpoint | grep Unavailable | grep 503)
+	grafana_data=$(curl --connect-timeout 60 --max-time 120 -s http://$graphana_endpoint | grep Unavailable | grep 503)
+	argocd_data=$(curl --connect-timeout 60 --max-time 120 -s -k https://$argocd_endpoint | grep Unavailable | grep 503)
+
+	printf "Trying to curl server"
+	iter=0
+    while [ $iter -lt 50 ] && ( ( [ -z "$version_data" ] || [ ! -z "$(curl --connect-timeout 60 --max-time 120 -s "http://$django_endpoint/version" | grep Unavailable | grep 503)" ] || [ ! -z "$(curl --connect-timeout 60 --max-time 120 -s "http://$django_endpoint/version" | grep Gateway | grep 504)" ] ) || [ ! -z "$kibana_data" ] || [ ! -z "$grafana_data" ] || [ ! -z "$argocd_data" ] )
+    do
+		kubectl apply -f "$SCRIPTPATH/manifests/ingress.yaml"
+		export django_endpoint="$(kubectl get ing ingress-dj-http -n django-namespace --template "{{ range (index .status.loadBalancer.ingress 0) }}{{.}}{{ end }}")/django"	
+		export kibana_endpoint="$(kubectl get ing ingress-kib-https -n log-system --template "{{ range (index .status.loadBalancer.ingress 0) }}{{.}}{{ end }}")/logs"
+		export graphana_endpoint="$(kubectl get ing ingress-gra-http -n perform-system --template "{{ range (index .status.loadBalancer.ingress 0) }}{{.}}{{ end }}")/grafana"
+		export argocd_endpoint="$(kubectl get ing ingress-argo-https -n argocd --template "{{ range (index .status.loadBalancer.ingress 0) }}{{.}}{{ end }}")/cd"
+	
+		version_data=$(curl --connect-timeout 60 --max-time 120 -s "http://${django_endpoint}/version")
+		kibana_data=$(curl --connect-timeout 60 --max-time 120 -s -k https://$kibana_endpoint | grep Unavailable | grep 503)
+		grafana_data=$(curl --connect-timeout 60 --max-time 120 -s http://$graphana_endpoint | grep Unavailable | grep 503)
+		argocd_data=$(curl --connect-timeout 60 --max-time 120 -s -k https://$argocd_endpoint | grep Unavailable | grep 503)
+		sleep 5
+		iter=$((iter+1))
+		printf "."
+	done
+	echo ""
+	echo "done"
+
+	# open django
+	
+	echo "$version_data"
+	echo "$django_endpoint"	
+
+	echo "$(sed "s+<URL_TEMPLATE>+$django_endpoint+g; s/<COMMIT_TEMPLATE>/$(echo "$version_data" | jq ".commit")/g; s/<TAG_TEMPLATE>/$(echo "$version_data" | jq ".tag")/g" "$SCRIPTPATH/../html/index_tmp.html")" > "$SCRIPTPATH/../html/index.html"
+    
+    	open "$SCRIPTPATH/../html/index.html" 2> /dev/null
+    	start "$SCRIPTPATH/../html/index.html" 2> /dev/null
+    	xdg-open "$SCRIPTPATH/../html/index.html" 2> /dev/null
+
+	# open kibana
+
+	export kib_password="$(kubectl get secret -n "log-system" quickstart-es-elastic-user -o=jsonpath='{.data.elastic}' | base64 --decode; echo)"
+
+	echo "https://elastic:${kib_password}@${kibana_endpoint}"
+	
+	curl -X POST -k -s -u "elastic:${kib_password}" "https://${kibana_endpoint}/api/saved_objects/index-pattern/app-logs" -H 'kbn-xsrf: true' -H 'Content-Type: application/json' -d'
+{
+  "attributes": {
+    "title": "app-logs-*",
+    "timeFieldName": "@timestamp"
+  }
+}
+'
+
+	open "https://${kibana_endpoint}" 2> /dev/null
+    start "https://${kibana_endpoint}" 2> /dev/null
+    xdg-open "https://${kibana_endpoint}" 2> /dev/null
+
+	# open graphana
+	
+	# deploy datasource and dashboard
+
+	kubectl apply -f "$SCRIPTPATH/manifests/graphana_configs.yaml" -n perform-system
+	curl -s -o "$SCRIPTPATH/manifests/gra_db.json" https://grafana.com/api/dashboards/3662/revisions/2/download && sed -i -z 's/  "templating": {\n    "list": \[\n/  "templating": {\n    "list": \[\n      {\n        "hide": 2,\n        "name": "DS_THEMIS",\n        "query": "Prometheus",\n        "skipUrlSync": false,\n        "type": "constant"\n      },\n/g' "$SCRIPTPATH/manifests/gra_db.json" && kubectl create configmap gra-dashboard --from-file="$SCRIPTPATH/manifests/gra_db.json" -n=perform-system --dry-run=client -o yaml | kubectl label -f - --dry-run=client -o yaml --local grafana_dashboard=1 -o yaml | kubectl apply -f - && rm "$SCRIPTPATH/manifests/gra_db.json"
+	kubectl create configmap gra-dashboard-one --from-file="$SCRIPTPATH/manifests/gra_dash.json" -n=perform-system --dry-run=client -o yaml | kubectl label -f - --dry-run=client -o yaml --local grafana_dashboard=1 -o yaml | kubectl replace -f - --force
+	kubectl create configmap gra-dashboard-two --from-file="$SCRIPTPATH/manifests/gra_dash_kube.json" -n=perform-system --dry-run=client -o yaml | kubectl label -f - --dry-run=client -o yaml --local grafana_dashboard=1 -o yaml | kubectl replace -f - --force
+	kubectl create configmap gra-dashboard-three --from-file="$SCRIPTPATH/manifests/gra_dash_doc.json" -n=perform-system --dry-run=client -o yaml | kubectl label -f - --dry-run=client -o yaml --local grafana_dashboard=1 -o yaml | kubectl replace -f - --force
+
+	export gra_password="$(kubectl get secret -n "perform-system" grafana -o jsonpath="{.data.admin-password}" | base64 --decode ; echo)"
+	export gra_user="$(kubectl get secret -n "perform-system" grafana -o jsonpath="{.data.admin-user}" | base64 --decode ; echo)"	
+
+	echo "http://${gra_user}:${gra_password}@${graphana_endpoint}"
+
+	open "http://${graphana_endpoint}" 2> /dev/null
+    start "http://${graphana_endpoint}" 2> /dev/null
+    xdg-open "http://${graphana_endpoint}" 2> /dev/null
+		
+	# open ArgoCD
+	
+	export arg_password="$(kubectl get secret -n "argocd" argocd-initial-admin-secret -o jsonpath="{.data.password}" | base64 --decode; echo)"
+
+	echo "https://admin:${arg_password}@${argocd_endpoint}"
+	
+	open "https://${argocd_endpoint}" 2> /dev/null
+    start "https://${argocd_endpoint}" 2> /dev/null
+    xdg-open "https://${argocd_endpoint}" 2> /dev/null
+
+	# create csv
+
+	echo "NAME,USER,PASSWORD,LINK" > auth.csv
+	echo "DJANGO,-,-,${django_endpoint}" >> auth.csv
+	echo "KIBANA,elastic,${kib_password},${kibana_endpoint}" >> auth.csv
+	echo "GRAFANA,${gra_user},${gra_password},${graphana_endpoint}" >> auth.csv
+	echo "ArgoCD,admin,${arg_password},${argocd_endpoint}" >> auth.csv
+	echo "Kube-flow,seva.kabrits@gmail.com,Souz-Mir-Lenin!,$(echo "$django_endpoint" | sed "s+django++g")" >> auth.csv
+	echo "Kube-flow,fake@gmail.com,admin,$(echo "$django_endpoint" | sed "s+django++g")" >> auth.csv
+# $(kubectl get ing ingress-ist-http -n istio-system --template "{{ range (index .status.loadBalancer.ingress 0) }}{{.}}{{ end }}")
+
+	open auth.csv 2> /dev/null
+	start auth.csv 2> /dev/null
+	xdg-open auth.csv 2> /dev/null
+
+	# deploy kubeflow
+	
+	kubectl delete sc gp2
+	
+	# while ! kustomize build "../kubeflow-manifests/deployments/vanilla/" | sed "s+admission-webhook-service+service+g" | sed "s+ISTIO_MUTUAL+DISABLE+g" | kubectl apply -f -; do echo "Retrying to apply resources"; sleep 10; done
+	while ! kustomize build "../kubeflow-manifests/deployments/vanilla/" | sed "s+admission-webhook-service+service+g" | kubectl apply -f -; do echo "Retrying to apply resources"; sleep 10; done
+	kubectl apply -f "$SCRIPTPATH/manifests/ingress.yaml"
+	kubectl apply -f "$SCRIPTPATH/manifests/profile.yaml"
+	kubectl apply -f "$SCRIPTPATH/manifests/poddef.yaml"
+	
+	# don't forget in jupyter `!pip install --upgrade ipywidgets` and restart kernel
+    
+    gh secret set AWS_ACCESS_KEY_ID --body "$AWS_ACCESS_KEY_ID" --repo "https://github.com/skabrits/ML_web.git"
+    
+	gh secret set AWS_SECRET_ACCESS_KEY --body "$AWS_SECRET_ACCESS_KEY" --repo "https://github.com/skabrits/ML_web.git"
+        
+	gh secret set REGION --body "$TF_VAR_main_region" --repo "https://github.com/skabrits/ML_web.git"
+	
+	gh secret set CLUSTER_REGION --body "$TF_VAR_region" --repo "https://github.com/skabrits/ML_web.git"
+	
+	gh secret set CLUSTER_NAME --body "django-cluster" --repo "https://github.com/skabrits/ML_web.git"
+	
+	
+	gh secret set AWS_ACCESS_KEY_ID --body "$AWS_ACCESS_KEY_ID" --repo "https://github.com/skabrits/ML_WEBS_OPS.git"
+    
+	gh secret set AWS_SECRET_ACCESS_KEY --body "$AWS_SECRET_ACCESS_KEY" --repo "https://github.com/skabrits/ML_WEBS_OPS.git"
+        
+	gh secret set REGION --body "$TF_VAR_main_region" --repo "https://github.com/skabrits/ML_WEBS_OPS.git"
+    
+fi

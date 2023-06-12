@@ -1,0 +1,45 @@
+#!/bin/bash
+#unicrypt files with aes-256-cbc cipher using openssl
+
+if [ $1 == "--help" ];
+then
+    echo "This software uses openssl for encrypting files with the aes-256-cbc cipher"
+    echo "Usage for encrypting: ./unicrypt -e [password] -f [file]"
+    echo "Usage for decrypting: ./unicrypt -d [password] -f [file]"
+    exit 0
+fi
+
+req_flag=false
+file_flag=false
+
+encrypt=true
+
+options=":f:e:d:"
+while getopts $options opt
+do
+        case $opt in
+                f) file=$OPTARG; $file_flag && file_flag=false || file_flag=true ;;
+                e) password=$OPTARG; $req_flag && req_flag=false || req_flag=true ;;
+                d) password=$OPTARG; $req_flag && req_flag=false || req_flag=true; encrypt=false ;;
+                \? ) echo "Use ./unicrypt --help to show help."; echo "Unknown option: -$OPTARG" >&2; exit 1;;
+                :  ) echo "Use ./unicrypt --help to show help."; echo "Missing option argument for -$OPTARG" >&2; exit 1;;
+                *  ) echo "Use ./unicrypt --help to show help."; echo "Unimplemented option: -$opt" >&2; exit 1;;
+        esac
+done
+
+if $req_flag
+then
+    if $file_flag && [ -f "$file" ]
+    then
+        if $encrypt
+        then
+            openssl aes-256-cbc -a -e -salt -in "$file" -out "$file.zip" -md md5 -pass pass:"$password"
+        else
+            openssl aes-256-cbc -a -d -salt -in "$file" -out "${file%.*}" -md md5 -pass pass:"$password"
+        fi
+    else
+        echo "This file does not exist!" >&2; exit 1;
+    fi
+else
+    echo "Not enough flags" >&2; exit 1;
+fi

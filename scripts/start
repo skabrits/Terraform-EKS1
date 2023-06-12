@@ -1,0 +1,30 @@
+#!/bin/bash
+
+SCRIPT1=$(readlink -f "$0")
+SCRIPTPATH1=$(dirname "$SCRIPT1")
+
+cd "$SCRIPTPATH1/../terraform-eks"
+
+terraform init -migrate-state -force-copy
+terraform validate
+terraform apply -auto-approve
+
+aws eks --region $(terraform output -raw region) update-kubeconfig \
+    --name $(terraform output -raw cluster_name)
+
+cd "$SCRIPTPATH1/../terraform-kubernetes"
+
+export TF_VAR_registry_password_ecr=$(aws ecr get-login-password --region $TF_VAR_main_region)
+
+terraform init -migrate-state -force-copy
+terraform validate
+terraform apply -auto-approve
+
+# helm repo add elastic https://helm.elastic.co
+# helm repo update
+
+# helm install elastic-operator elastic/eck-operator -n elastic-system --create-namespace
+
+# helm install elstack elastic/eck-stack -n elastic-stack --create-namespace
+
+cd "$SCRIPTPATH1"

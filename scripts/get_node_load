@@ -1,0 +1,15 @@
+#!/bin/bash
+
+nodes_info="$(kubectl get nodes -o custom-columns=":metadata.name,:metadata.labels.instance_type,:metadata.labels.has_gpu")"
+nodes="$(echo "$nodes_info" | awk '{print $1}')"
+info="$(echo "$nodes_info" | awk '{print $2}')"
+label="$(echo "$nodes_info" | awk '{print $3}')"
+lnum=2
+for nd in $nodes ; do
+	echo "$nd"
+	echo "$info" | sed "${lnum}q;d"
+	echo "$label" | sed "${lnum}q;d"
+	kubectl get pods --all-namespaces -o wide --field-selector spec.nodeName=$nd
+	echo ""
+	lnum=$((lnum+1))
+done
